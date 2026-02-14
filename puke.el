@@ -60,15 +60,13 @@
   (message "Deploying notes.")
   (let ((default-directory puke-hugo-base-dir))
     (async-shell-command
-     (format "rm -rf public/* static/data static/_pagefind \
-&& cp -r %s static \
-&& hugo \
-&& cd themes/statine && npx @tailwindcss/cli -i assets/css/main.css -o assets/css/style.css && cd ../.. \
-&& npx pagefind --site public --output-path static/_pagefind \
-&& hugo \
-&& rsync -az --delete public %s"
-             (shell-quote-argument (expand-file-name "data" org-roam-directory))
-             (shell-quote-argument puke-deploy-host))
+     (format "rsync -a %s/data/ static/data \
+&& (cd themes/statine && npx @tailwindcss/cli -i assets/css/main.css -o assets/css/style.css) \
+&& hugo --cleanDestinationDir \
+&& npx pagefind --site public \
+&& rsync -az --delete public/ %s"
+             org-roam-directory
+             puke-deploy-host)
      "*puke-deploy*")))
 
 ;;;###autoload
@@ -87,7 +85,7 @@
   (interactive)
   (let ((org-hugo-base-dir puke-hugo-base-dir)
         (org-hugo-section ""))
-    (shell-command (format "rm %scontent/*" (shell-quote-argument puke-hugo-base-dir)))
+    (shell-command (format "rm %scontent/*" puke-hugo-base-dir))
     (let ((user-buffers (buffer-list)))
       (mapc (lambda (note)
               (with-current-buffer (find-file-noselect note)
