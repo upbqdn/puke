@@ -62,7 +62,7 @@
     (async-shell-command
      (format "rsync -a %s/data/ static/data \
 && (cd themes/statine && npx @tailwindcss/cli -i assets/css/main.css -o assets/css/style.css) \
-&& hugo --cleanDestinationDir \
+&& hugo \
 && npx pagefind --site public \
 && rsync -az --delete public/ %s"
              org-roam-directory
