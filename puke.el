@@ -132,5 +132,60 @@ inserts the full scaffold."
     (forward-line -1)
     (end-of-line)))
 
+(defun puke--collect-anchors ()
+  "Collect all anchors from org files in `org-roam-directory'.
+Return a list of (DISPLAY . (FILE ANCHOR DESCRIPTION)) entries."
+  (let ((files (directory-files org-roam-directory t "\\.org\\'"))
+        (anchor-re (concat "^<<\\(\\.[a-z]+-[a-z0-9]+\\)>>"
+                           " \\*\\[\\[[^]]+\\]\\[\\([^]]+\\)\\]\\]\\*"
+                           "\\.?\\(.*\\)"))
+        results)
+    (dolist (file files)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let ((title (when (re-search-forward "^#\\+title: \\(.+\\)" nil t)
+                       (match-string 1))))
+          (goto-char (point-min))
+          (while (re-search-forward anchor-re nil t)
+            (let* ((anchor (match-string 1))
+                   (label (match-string 2))
+                   (desc (string-trim (match-string 3)))
+                   (desc (replace-regexp-in-string
+                          "\\[\\[[^]]*\\]\\[\\([^]]*\\)\\]\\]" "\\1" desc))
+                   (desc (replace-regexp-in-string "\\\\(\\|\\\\)" "" desc))
+                   (desc (truncate-string-to-width desc 60))
+                   (display (format "%s | %s%s"
+                                    (or title (file-name-base file))
+                                    label
+                                    (if (string-empty-p desc) ""
+                                      (concat " — " desc)))))
+              (push (cons display (list (file-name-nondirectory file)
+                                        anchor desc))
+                    results))))))
+    (nreverse results)))
+
+;;;###autoload
+(defun puke-insert-ref ()
+  "Search anchors across org-roam and insert a cross-reference at point."
+  (interactive)
+  (let* ((candidates (puke--collect-anchors))
+         (chosen (completing-read "Anchor: " candidates nil t))
+         (entry (cdr (assoc chosen candidates)))
+         (file (nth 0 entry))
+         (anchor (nth 1 entry))
+         (desc (nth 2 entry))
+         (current-file (and buffer-file-name
+                            (file-name-nondirectory buffer-file-name)))
+         (default-text (if (string-empty-p desc)
+                           anchor
+                         (substring-no-properties desc 0
+                                                  (min (length desc) 40))))
+         (link-text (read-string (format "Link text (default %s): " default-text)
+                                 nil nil default-text))
+         (same-file (string-equal file current-file)))
+    (insert (if same-file
+                (format "[[%s][%s]]" anchor link-text)
+              (format "[[file:%s::%s][%s]]" file anchor link-text)))))
+
 (provide 'puke)
 ;;; puke.el ends here
