@@ -98,5 +98,39 @@
   (puke-deploy)
   (message "Notes were published."))
 
+(defconst puke-anchor-types
+  '(("def" . ("def" . "Definition"))
+    ("rem" . ("rem" . "Remark"))
+    ("exp" . ("exp" . "Example"))
+    ("prp" . ("prp" . "Proposition"))
+    ("thm" . ("thm" . "Theorem"))
+    ("alg" . ("alg" . "Algorithm"))
+    ("eqn" . ("eqn" . "Equation"))
+    ("fig" . ("fig" . "Figure"))
+    ("tab" . ("tab" . "Table"))
+    ("lst" . ("lst" . "Listing"))
+    ("etu" . ("etu" . "Etumon")))
+  "Alist of anchor types.
+Each entry is (TYPE . (PREFIX . LABEL)) where TYPE is used for the
+block wrapper, PREFIX for the anchor, and LABEL for display.")
+
+;;;###autoload
+(defun puke-insert-anchor ()
+  "Insert a labeled anchor with its block wrapper at point.
+Prompts for the block type, allocates the next z-base-32 ID, and
+inserts the full scaffold."
+  (interactive)
+  (let* ((type (completing-read "Type: " puke-anchor-types nil t))
+         (entry (cdr (assoc type puke-anchor-types)))
+         (prefix (car entry))
+         (label (cdr entry))
+         (id (puke-encode-z-base-32 (puke-counter 1)))
+         (anchor (format ".%s-%s" prefix id))
+         (tag (format "%s %s" label id)))
+    (insert (format "#+BEGIN_%s\n<<%s>> *[[%s][%s]]*. \n#+END_%s"
+                    type anchor anchor tag type))
+    (forward-line -1)
+    (end-of-line)))
+
 (provide 'puke)
 ;;; puke.el ends here
