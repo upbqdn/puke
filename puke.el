@@ -15,8 +15,28 @@
   "Hugo site directory."
   :type 'directory)
 
-(defcustom puke-deploy-host "marek:/var/www/marek.onl"
+(defcustom puke-deploy-host "marek.onl:/var/www/marek.onl"
   "Rsync destination for deployment."
+  :type 'string)
+
+(defcustom puke-pagefind-version "1.5.2"
+  "Pagefind release used to build the search index.
+
+A client bundle only understands an index built by its own release, and nginx
+serves the bundle with a 7-day `expires' and no revalidation.  Bumping this is
+safe because `puke-bundle-directory' puts the version in the bundle URL, so a
+browser holding a cached bundle is never asked to read another release's
+index; it simply stops requesting the old URL.  That invariant rests on two
+things, and a bump is only safe while both hold:
+
+  - the theme derives its bundle URLs from HUGO_PAGEFIND_VERSION, which the
+    deploy exports (see the pagefind-dir.html partial); and
+  - the deploy's rsync protects bundle directories from --delete, so pages
+    served before the bump keep finding the index they were built against.
+
+Note that serving `expires -1' for the bundle would not make an unversioned
+bump safe: responses already cached carry their original max-age and are not
+revalidated until it lapses."
   :type 'string)
 
 (defconst puke-z-base-32-alphabet "ybndrfg8ejkmcpqxot1uwisza345h769")
@@ -55,37 +75,102 @@
   (interactive)
   (message "Next ID: %s" (puke-encode-z-base-32 (+ (puke-counter -1) 1))))
 
-(defun puke-deploy ()
-  "Deploy Hugo notes asynchronously."
-  (message "Deploying notes.")
-  (let ((default-directory puke-hugo-base-dir))
-    (async-shell-command
-     (format "rsync -a %s/data/ static/data \
-&& (cd themes/statine && npx @tailwindcss/cli -i assets/css/main.css -o assets/css/style.css) \
-&& hugo \
-&& npx pagefind --site public \
-&& rsync -az --delete public/ %s"
-             org-roam-directory
-             puke-deploy-host)
-     "*puke-deploy*")))
+(defconst puke-deploy-buffer "*puke-deploy*"
+  "Buffer collecting the output of the most recent deploy.")
+
+(defun puke-bundle-directory ()
+  "Return the site-relative directory that holds the pagefind bundle.
+The name carries the version, so a bump changes every bundle URL and no
+browser can pair a cached client with an index built by another release."
+  (format "pagefind-%s" puke-pagefind-version))
+
+(defun puke--deploy-command ()
+  "Return the shell pipeline that builds the site and rsyncs it out."
+  (mapconcat
+   #'identity
+   (list
+    (format "rsync -a %s static/data"
+            (shell-quote-argument (expand-file-name "data/" org-roam-directory)))
+    "(cd themes/statine && npx @tailwindcss/cli -i assets/css/main.css -o assets/css/style.css)"
+    ;; The theme reads HUGO_PAGEFIND_VERSION to build the bundle URLs, so it
+    ;; and the pagefind run below agree by construction.
+    (format "HUGO_PAGEFIND_VERSION=%s hugo"
+            (shell-quote-argument puke-pagefind-version))
+    (format "npx pagefind@%s --site public --output-subdir %s"
+            (shell-quote-argument puke-pagefind-version)
+            (shell-quote-argument (puke-bundle-directory)))
+    ;; --delay-updates puts every file in place at once, so the site never
+    ;; serves HTML that points at a bundle which has not arrived yet.  The
+    ;; protect filters keep --delete away from bundles of other versions:
+    ;; pages served before a bump keep fetching index shards from the URL
+    ;; they were built against, and open tabs go on working.  Pruning those
+    ;; directories is a separate, deliberate act.
+    (format "rsync -az --delete --delay-updates %s %s public/ %s"
+            (shell-quote-argument "--filter=P /pagefind/")
+            (shell-quote-argument "--filter=P /pagefind-*/")
+            (shell-quote-argument puke-deploy-host)))
+   " && "))
+
+(defun puke--deploy-sentinel (process _event)
+  "Report how deploy PROCESS finished."
+  (when (memq (process-status process) '(exit signal))
+    (let ((status (process-exit-status process)))
+      (if (eq status 0)
+          (message "%s" (process-get process 'puke-success))
+        (message "Deploy failed (exit %s).  See %s" status puke-deploy-buffer)
+        (display-buffer (process-buffer process))))))
+
+;;;###autoload
+(defun puke-deploy (&optional success-message)
+  "Build the site and rsync it to `puke-deploy-host'.
+Runs asynchronously in `puke-deploy-buffer'.  SUCCESS-MESSAGE is shown
+once the pipeline exits cleanly, its exit status when it does not.  The
+steps are chained with `&&', so a failure short-circuits before rsync
+and leaves the deployed site as it was."
+  (interactive)
+  (let ((default-directory puke-hugo-base-dir)
+        (buffer (get-buffer-create puke-deploy-buffer)))
+    (when (process-live-p (get-buffer-process buffer))
+      (user-error "A deploy is already running"))
+    (with-current-buffer buffer
+      ;; A buffer left over from `async-shell-command' carries read-only
+      ;; comint text, so erasing it needs the override.
+      (let ((inhibit-read-only t))
+        (erase-buffer))
+      (fundamental-mode))
+    (let ((process (start-process-shell-command
+                    "puke-deploy" buffer (puke--deploy-command))))
+      (process-put process 'puke-success (or success-message "Site deployed."))
+      (set-process-sentinel process #'puke--deploy-sentinel)
+      (display-buffer buffer)
+      (message "Deploying.")
+      process)))
 
 ;;;###autoload
 (defun puke-publish-note ()
-  "Publish the current org-roam note."
+  "Export the current org-roam note and deploy the site."
   (interactive)
   (let ((org-hugo-base-dir puke-hugo-base-dir)
         (org-hugo-section ""))
     (org-hugo-export-wim-to-md t))
-  (puke-deploy)
-  (message "%s was published." (buffer-name)))
+  (puke-deploy (format "%s was published." (buffer-name))))
+
+(defun puke--clear-exported-content ()
+  "Delete what ox-hugo has written to the site's content directory."
+  (let ((content (expand-file-name "content" puke-hugo-base-dir)))
+    (when (file-directory-p content)
+      (dolist (file (directory-files content t directory-files-no-dot-files-regexp))
+        (if (file-directory-p file)
+            (delete-directory file t)
+          (delete-file file))))))
 
 ;;;###autoload
 (defun puke-rebuild-notes ()
-  "Rebuild all org-roam notes."
+  "Re-export every org-roam note and deploy the site."
   (interactive)
   (let ((org-hugo-base-dir puke-hugo-base-dir)
         (org-hugo-section ""))
-    (shell-command (format "rm %scontent/*" puke-hugo-base-dir))
+    (puke--clear-exported-content)
     (let ((user-buffers (buffer-list)))
       (mapc (lambda (note)
               (with-current-buffer (find-file-noselect note)
@@ -95,8 +180,7 @@
               (unless (member buffer user-buffers)
                 (kill-buffer buffer)))
             (buffer-list))))
-  (puke-deploy)
-  (message "Notes were published."))
+  (puke-deploy "Notes were published."))
 
 (defconst puke-anchor-types
   '(("def" . ("def" . "Definition"))
@@ -109,7 +193,8 @@
     ("fig" . ("fig" . "Figure"))
     ("tab" . ("tab" . "Table"))
     ("lst" . ("lst" . "Listing"))
-    ("etu" . ("etu" . "Etumon")))
+    ("etu" . ("etu" . "Etumon"))
+    ("prf" . ("prf" . "Proof")))
   "Alist of anchor types.
 Each entry is (TYPE . (PREFIX . LABEL)) where TYPE is used for the
 block wrapper, PREFIX for the anchor, and LABEL for display.")
