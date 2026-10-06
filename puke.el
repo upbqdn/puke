@@ -91,11 +91,15 @@ browser can pair a cached client with an index built by another release."
    (list
     (format "rsync -a %s static/data"
             (shell-quote-argument (expand-file-name "data/" org-roam-directory)))
-    "(cd themes/statine && npx @tailwindcss/cli -i assets/css/main.css -o assets/css/style.css)"
+    ;; The theme's lockfile pins Tailwind and Temml, which the build steps
+    ;; below run.
+    "(cd themes/statine && npm ci --no-audit --no-fund && npm run build-tw)"
     ;; The theme reads HUGO_PAGEFIND_VERSION to build the bundle URLs, so it
     ;; and the pagefind run below agree by construction.
     (format "HUGO_PAGEFIND_VERSION=%s hugo"
             (shell-quote-argument puke-pagefind-version))
+    ;; TeX to MathML, before pagefind indexes the pages.
+    "python3 themes/statine/tools/mathml.py public"
     (format "npx pagefind@%s --site public --output-subdir %s"
             (shell-quote-argument puke-pagefind-version)
             (shell-quote-argument (puke-bundle-directory)))
